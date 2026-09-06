@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pandas as pd
@@ -22,8 +23,14 @@ API_URL = os.getenv(
 FEATURES = ["Time"] + [f"V{i}" for i in range(1, 29)] + ["Amount"]
 
 MAX_WORKERS = 8        # l'API score une transaction par requête
-WAKE_TIMEOUT = 120     # Render (plan gratuit) met ~50s à sortir de veille
+WAKE_BUDGET = 180      # Render (plan gratuit) met ~50s à sortir de veille
+WAKE_ATTEMPT_TIMEOUT = 30   # une tentative de réveil isolée
+WAKE_RETRY_DELAY = 3
 PREDICT_TIMEOUT = 30
+
+# Render répond en 5xx pendant que le service redémarre : ce n'est pas une
+# panne, juste la fin du réveil.
+RETRYABLE_STATUS = {500, 502, 503, 504}
 
 RISK_LABELS = {"HIGH": "🔴 HIGH", "MEDIUM": "🟡 MEDIUM", "LOW": "🟢 LOW"}
 
@@ -44,24 +51,44 @@ def _session():
 
 
 def wake_api():
-    """Réveille l'API et vérifie qu'elle répond, sinon lève ApiUnavailable."""
-    try:
-        response = requests.get(f"{API_URL}/health", timeout=WAKE_TIMEOUT)
-        response.raise_for_status()
-    except requests.exceptions.Timeout:
-        raise ApiUnavailable(
-            f"l'API n'a pas répondu en moins de {WAKE_TIMEOUT}s. Elle est "
-            "probablement encore en train de sortir de veille."
-        )
-    except requests.exceptions.ConnectionError:
-        raise ApiUnavailable(
-            "impossible de joindre l'API. Vérifie la connexion réseau ou que "
-            "le service est bien déployé."
-        )
-    except requests.exceptions.HTTPError as exc:
-        code = exc.response.status_code if exc.response is not None else "?"
-        raise ApiUnavailable(f"l'API a répondu avec une erreur HTTP {code}.")
-    return True
+    """
+    Réveille l'API et vérifie qu'elle répond, sinon lève ApiUnavailable.
+
+    On réessaie pendant WAKE_BUDGET secondes plutôt que d'attendre une seule
+    réponse : pendant le réveil de Render, un timeout, une coupure réseau
+    passagère ou un 502 sont attendus et ne doivent pas faire échouer la page.
+    """
+    deadline = time.monotonic() + WAKE_BUDGET
+    last_error = "l'API n'a pas répondu à temps"
+
+    while True:
+        try:
+            response = requests.get(
+                f"{API_URL}/health", timeout=WAKE_ATTEMPT_TIMEOUT
+            )
+            if response.status_code in RETRYABLE_STATUS:
+                last_error = (
+                    f"l'API a répondu avec une erreur HTTP "
+                    f"{response.status_code}"
+                )
+            else:
+                # Une 4xx signale une mauvaise URL : inutile de réessayer.
+                response.raise_for_status()
+                return True
+        except requests.exceptions.HTTPError as exc:
+            code = exc.response.status_code if exc.response is not None else "?"
+            raise ApiUnavailable(f"l'API a répondu avec une erreur HTTP {code}.")
+        except requests.exceptions.Timeout:
+            last_error = "l'API n'a pas répondu à temps"
+        except requests.exceptions.ConnectionError:
+            last_error = "impossible de joindre l'API (réseau ou DNS)"
+
+        if time.monotonic() >= deadline:
+            raise ApiUnavailable(
+                f"{last_error}, après {WAKE_BUDGET}s de tentatives. Elle est "
+                "probablement encore en train de sortir de veille."
+            )
+        time.sleep(WAKE_RETRY_DELAY)
 
 
 def predict_one(payload):
