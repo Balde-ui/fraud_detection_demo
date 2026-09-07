@@ -8,7 +8,7 @@
 Dashboard interactif de détection de fraude bancaire par Machine Learning.
 
 ## 🌐 Demo live
-👉 _URL à renseigner après le déploiement sur Streamlit Cloud_
+👉 **[Accéder au dashboard](https://frauddetectiondemo-zriwmvzpi7wa3gy2vnxugu.streamlit.app/)**
 
 ## 🏗️ Architecture
 
