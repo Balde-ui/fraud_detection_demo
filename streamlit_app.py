@@ -257,7 +257,7 @@ display_df['Fraude détectée'] = display_df['Fraude détectée'].apply(
     lambda x: "🚨 OUI" if x == 1 else "✅ NON"
 )
 
-st.dataframe(display_df, use_container_width=True)
+st.dataframe(display_df, width='stretch')
 
 st.divider()
 
